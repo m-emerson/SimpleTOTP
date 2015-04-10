@@ -23,11 +23,6 @@
 
 class sspmod_simpletotp_Auth_Process_2fa extends SimpleSAML_Auth_ProcessingFilter {
     /**
-     * Attribute that stores the TOTP secret
-     */
-    private $secret_attr = 'totp_secret';
-
-    /**
      * Value of the TOTP secret
      */
     private $secret_val = NULL;
@@ -44,7 +39,12 @@ class sspmod_simpletotp_Auth_Process_2fa extends SimpleSAML_Auth_ProcessingFilte
      *  have a TOTP attribute set.  If this attribute is NULL, the user will 
      *  be redirect to the internal error page.
      */
-    private $not_configured_url = NULL;
+    private $not_configured_url = 'not_configured.php';
+
+    /**
+     * Base LinOTP authentication URL to authenticate against.
+     */
+    private $linotp_authentication_url = NULL;
 
     /**
      * Initialize the filter.
@@ -65,24 +65,24 @@ class sspmod_simpletotp_Auth_Process_2fa extends SimpleSAML_Auth_ProcessingFilte
             }
         }
 
-        if (array_key_exists('secret_attr', $config)) {
-            $this->secret_attr = $config['secret_attr'];
-            if (!is_string($this->secret_attr)) {
-                throw new Exception('Invalid attribute name given to simpletotp::2fa filter:
- secret_attr must be a string');
-            }
-        }
-        
         if (array_key_exists('not_configured_url', $config)) {
             $this->not_configured_url = $config['not_configured_url'];
-            if (!is_string($config['not_configured_url'])) {
+            /*if (!is_string($config['not_configured_url'])) {
                 throw new Exception('Invalid attribute value given to simpletotp::2fa filter:
  not_configured_url must be a string');
-            }
+            }*/
 
             //validate URL to ensure it's we will be able to redirect to
-            $this->not_configured_url =
+            $this->not_configured_url = $config['not_configured_url'];
             SimpleSAML_Utilities::checkURLAllowed($config['not_configured_url']);
+        }
+
+        if (array_key_exists('linotp_authentication_url', $config)) {
+            $this->linotp_authentication_url = $config['linotp_authentication_url'];
+            if (!is_string($config['linotp_authentication_url'])) {
+                throw new Exception('Invalid attribute value given to simpletotp::2fa filter:
+ linotp_authentication_url must be a string');
+            }
         }
     }
 
@@ -92,35 +92,24 @@ class sspmod_simpletotp_Auth_Process_2fa extends SimpleSAML_Auth_ProcessingFilte
      * @param array &$state  The current state
      */
     public function process(&$state) {
+	$metadata = SimpleSAML_Metadata_MetaDataStorageHandler::getMetadataHandler();
+	$local_idp_entityid = $metadata->getMetaDataCurrentEntityID('saml20-idp-hosted');
+	$local_idp_metadata = $metadata->getMetaData($local_idp_entityid, 'saml20-idp-hosted');
+
         assert('is_array($state)');
         assert('array_key_exists("Attributes", $state)');
 
         $attributes =& $state['Attributes'];
 
-        if (array_key_exists($this->secret_attr, $attributes)) {
-            $this->secret_val = $attributes[$this->secret_attr][0];
-        }
-
-        if ($this->secret_val === NULL && $this->enforce_2fa === true) {
-            #2f is enforced and user does not have it configured..
-            SimpleSAML_Logger::debug('User with ID xxx does not have 2f configured when it is
-            mandatory for xxxSP');
-
-            //send user to custom error page if configured
-            if ($this->not_configured_url !== NULL) {
-                SimpleSAML_Utilities::redirectUntrustedURL($this->not_configured_url);
-            } else {
-                SimpleSAML_Utilities::redirectTrustedURL(SimpleSAML_Module::getModuleURL('simpletotp/not_configured.php'));
-            }
-
-        } elseif ($this->secret_val === NULL && $this->enforce_2fa === false) {
-            SimpleSAML_Logger::debug('User with ID xxx does not have 2f configured but SP does not
-            require it. Continue.');
-            return;
-        }
-
+	if (!array_key_exists($local_idp_metadata['userid.attribute'], $attributes)) {
+		throw new Exception('core:AttributeRealm: Missing UserID for this user. Please' .
+			' check the \'userid.attribute\' option in the metadata against the' .
+			' attributes provided by the authentication source.');
+	}
         //as the attribute is configurable, we need to store it in a consistent location
         $state['2fa_secret'] = $this->secret_val;
+	// URL to authenticate against
+	$state['authentication_url'] = $this->linotp_authentication_url;
 
         //this means we have secret_val configured for this session, time to 2fa
         $id  = SimpleSAML_Auth_State::saveState($state, 'simpletotp:request');
